@@ -4,6 +4,7 @@ import { useEffect, useState } from "react";
 import type { Birthday } from "@/types/birthday";
 import { loadBirthdays, saveBirthdays } from "@/lib/storage";
 import { v4 as uuidv4 } from "uuid";
+import { supabase } from "@/lib/supabaseClient";
 
 const MONTH_NAMES = [
   "January",
@@ -82,11 +83,39 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
 
+  const [supabaseStatus, setSupabaseStatus] =
+  useState<string>("Checking Supabase connection…");
+
+
+  // Load from localStorage AND test Supabase
   useEffect(() => {
     const stored = loadBirthdays();
     setBirthdays(stored);
+
+    async function testSupabase() {
+      try {
+        const { data, error } = await supabase
+          .from("birthdays")
+          .select("*")
+          .limit(1);
+
+        if (error) {
+          console.error("Supabase error:", error);
+          setSupabaseStatus("❌ Supabase error: " + error.message);
+        } else {
+          console.log("Supabase data:", data);
+          setSupabaseStatus("✅ Supabase connected");
+        }
+      } catch (e: any) {
+        console.error("Supabase exception:", e);
+        setSupabaseStatus("❌ Supabase exception: " + e.message);
+      }
+    }
+
+    testSupabase();
   }, []);
 
+  // Save to localStorage whenever birthdays change
   useEffect(() => {
     saveBirthdays(birthdays);
   }, [birthdays]);
@@ -182,6 +211,10 @@ export default function HomePage() {
         <h1 className="text-2xl font-bold text-center">
           Simple Birthday Reminder
         </h1>
+
+        <div className="text-xs text-center text-slate-400">
+          {supabaseStatus}
+        </div>
 
         {error && (
           <div className="bg-red-900/40 border border-red-500/60 text-red-100 text-sm px-3 py-2 rounded-md">
