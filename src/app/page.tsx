@@ -70,6 +70,51 @@ function ageTurning(b: Birthday): number | null {
   return age + 1;
 }
 
+// ☁️ Load birthdays from Supabase
+async function loadFromCloud(): Promise<Birthday[]> {
+  const { data, error } = await supabase
+    .from("birthdays")
+    .select("*")
+    .order("month", { ascending: true })
+    .order("day", { ascending: true });
+
+  if (error) {
+    console.error("Supabase insert error:", error);
+    throw error;
+  }
+
+  // Map DB rows (photo_url, year possibly null) → Birthday shape
+  return (data ?? []).map((row: any) => ({
+    id: row.id,
+    name: row.name,
+    day: row.day,
+    month: row.month,
+    year: row.year ?? undefined,
+    timezone: row.timezone,
+    photoUrl: row.photo_url ?? undefined,
+  })) as Birthday[];
+}
+
+// ☁️ Save one birthday to Supabase
+async function saveToCloud(birthday: Birthday) {
+  const { error } = await supabase.from("birthdays").insert([
+    {
+      id: birthday.id,
+      name: birthday.name,
+      day: birthday.day,
+      month: birthday.month,
+      year: birthday.year ?? null,
+      timezone: birthday.timezone,
+      photo_url: birthday.photoUrl ?? null,
+    },
+  ]);
+
+  if (error) {
+    console.error("Supabase insert error:", error);
+    throw error;
+  }
+}
+
 export default function HomePage() {
   const [birthdays, setBirthdays] = useState<Birthday[]>([]);
 
@@ -84,35 +129,26 @@ export default function HomePage() {
   const [editingId, setEditingId] = useState<string | null>(null);
 
   const [supabaseStatus, setSupabaseStatus] =
-  useState<string>("Checking Supabase connection…");
+    useState<string>("Checking Supabase connection…");
 
-
-  // Load from localStorage AND test Supabase
+  // Load from localStorage and then try Supabase
   useEffect(() => {
-    const stored = loadBirthdays();
-    setBirthdays(stored);
+    async function loadData() {
+      // show whatever is in localStorage immediately
+      const stored = loadBirthdays();
+      setBirthdays(stored);
 
-    async function testSupabase() {
       try {
-        const { data, error } = await supabase
-          .from("birthdays")
-          .select("*")
-          .limit(1);
-
-        if (error) {
-          console.error("Supabase error:", error);
-          setSupabaseStatus("❌ Supabase error: " + error.message);
-        } else {
-          console.log("Supabase data:", data);
-          setSupabaseStatus("✅ Supabase connected");
-        }
-      } catch (e: any) {
-        console.error("Supabase exception:", e);
-        setSupabaseStatus("❌ Supabase exception: " + e.message);
+        const cloud = await loadFromCloud();
+        setBirthdays(cloud);
+        setSupabaseStatus("✅ Loaded from Supabase");
+      } catch (err: any) {
+        console.error(err);
+        setSupabaseStatus("❌ Could not load from Supabase");
       }
     }
 
-    testSupabase();
+    loadData();
   }, []);
 
   // Save to localStorage whenever birthdays change
@@ -157,7 +193,7 @@ export default function HomePage() {
     let updated: Birthday[];
 
     if (editingId) {
-      // update existing
+      // update existing (local only for now)
       updated = birthdays
         .map((b) =>
           b.id === editingId ? { ...b, ...baseBirthday } : b
@@ -173,6 +209,12 @@ export default function HomePage() {
       updated = [...birthdays, newBirthday].sort(
         (a, b) => daysUntil(a) - daysUntil(b)
       );
+
+      // ☁️ Save to Supabase for new entries
+      saveToCloud(newBirthday).catch((err) => {
+        console.error("Cloud save failed:", err);
+        setSupabaseStatus("❌ Cloud save failed: " + (err?.message ?? "Unknown error"));
+      });
     }
 
     setBirthdays(updated);
@@ -188,6 +230,7 @@ export default function HomePage() {
   const handleDelete = (id: string) => {
     const updated = birthdays.filter((b) => b.id !== id);
     setBirthdays(updated);
+    // (later we can also delete from Supabase)
   };
 
   const handleEdit = (b: Birthday) => {
