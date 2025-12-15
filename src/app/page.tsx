@@ -7,70 +7,49 @@ import { v4 as uuidv4 } from "uuid";
 import { supabase } from "@/lib/supabaseClient";
 
 const MONTH_NAMES = [
-  "January",
-  "February",
-  "March",
-  "April",
-  "May",
-  "June",
-  "July",
-  "August",
-  "September",
-  "October",
-  "November",
-  "December",
+  "January", "February", "March", "April", "May", "June",
+  "July", "August", "September", "October", "November", "December",
 ];
 
+// Format birthday: "5 May"
 function formatBirthdayDate(b: Birthday): string {
   const monthName = MONTH_NAMES[b.month - 1] ?? `Month ${b.month}`;
   return `${b.day} ${monthName}`;
 }
 
-// Helper: how many days until this birthday (ignoring year)
+// Helper: days until next birthday (ignores year)
 function daysUntil(b: Birthday): number {
   const today = new Date();
-  const todayMidnight = new Date(
-    today.getFullYear(),
-    today.getMonth(),
-    today.getDate()
-  );
+  const todayMidnight = new Date(today.getFullYear(), today.getMonth(), today.getDate());
 
-  const thisYear = new Date(
-    today.getFullYear(),
-    b.month - 1,
-    b.day
-  );
-
-  let next = thisYear;
-
+  let next = new Date(today.getFullYear(), b.month - 1, b.day);
   if (next < todayMidnight) {
     next = new Date(today.getFullYear() + 1, b.month - 1, b.day);
   }
 
-  const diffMs = next.getTime() - todayMidnight.getTime();
-  return Math.round(diffMs / (1000 * 60 * 60 * 24));
+  return Math.round((next.getTime() - todayMidnight.getTime()) / (1000 * 60 * 60 * 24));
 }
 
-// Helper: what age they are turning (if year known)
+// Helper: age they will turn
 function ageTurning(b: Birthday): number | null {
   if (!b.year) return null;
 
   const today = new Date();
-  const birthThisYear = new Date(
-    today.getFullYear(),
-    b.month - 1,
-    b.day
-  );
-
   let age = today.getFullYear() - b.year;
-  if (birthThisYear > today) {
+
+  const birthdayThisYear = new Date(today.getFullYear(), b.month - 1, b.day);
+  if (birthdayThisYear > today) {
     age -= 1;
   }
 
   return age + 1;
 }
 
-// ☁️ Load birthdays from Supabase
+//
+// --- SUPABASE HELPERS ---
+//
+
+// Load all birthdays from Supabase
 async function loadFromCloud(): Promise<Birthday[]> {
   const { data, error } = await supabase
     .from("birthdays")
@@ -78,13 +57,9 @@ async function loadFromCloud(): Promise<Birthday[]> {
     .order("month", { ascending: true })
     .order("day", { ascending: true });
 
-  if (error) {
-    console.error("Supabase insert error:", error);
-    throw error;
-  }
+  if (error) throw error;
 
-  // Map DB rows (photo_url, year possibly null) → Birthday shape
-  return (data ?? []).map((row: any) => ({
+  return data.map((row: any) => ({
     id: row.id,
     name: row.name,
     day: row.day,
@@ -92,10 +67,10 @@ async function loadFromCloud(): Promise<Birthday[]> {
     year: row.year ?? undefined,
     timezone: row.timezone,
     photoUrl: row.photo_url ?? undefined,
-  })) as Birthday[];
+  }));
 }
 
-// ☁️ Save one birthday to Supabase
+// Insert new birthday
 async function saveToCloud(birthday: Birthday) {
   const { error } = await supabase.from("birthdays").insert([
     {
@@ -109,11 +84,39 @@ async function saveToCloud(birthday: Birthday) {
     },
   ]);
 
-  if (error) {
-    console.error("Supabase insert error:", error);
-    throw error;
-  }
+  if (error) throw error;
 }
+
+// Update existing birthday
+async function updateInCloud(birthday: Birthday) {
+  const { error } = await supabase
+    .from("birthdays")
+    .update({
+      name: birthday.name,
+      day: birthday.day,
+      month: birthday.month,
+      year: birthday.year ?? null,
+      timezone: birthday.timezone,
+      photo_url: birthday.photoUrl ?? null,
+    })
+    .eq("id", birthday.id);
+
+  if (error) throw error;
+}
+
+// Delete birthday
+async function deleteFromCloud(id: string) {
+  const { error } = await supabase
+    .from("birthdays")
+    .delete()
+    .eq("id", id);
+
+  if (error) throw error;
+}
+
+//
+// --- MAIN COMPONENT ---
+//
 
 export default function HomePage() {
   const [birthdays, setBirthdays] = useState<Birthday[]>([]);
@@ -128,34 +131,35 @@ export default function HomePage() {
   const [error, setError] = useState<string | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null);
 
-  const [supabaseStatus, setSupabaseStatus] =
-    useState<string>("Checking Supabase connection…");
+  const [supabaseStatus, setSupabaseStatus] = useState("Checking Supabase…");
 
-  // Load from localStorage and then try Supabase
+  // Load data from Supabase (fallback: localStorage)
   useEffect(() => {
     async function loadData() {
-      // show whatever is in localStorage immediately
-      const stored = loadBirthdays();
-      setBirthdays(stored);
+      const cached = loadBirthdays();
+      setBirthdays(cached);
 
       try {
-        const cloud = await loadFromCloud();
-        setBirthdays(cloud);
+        const cloudData = await loadFromCloud();
+        setBirthdays(cloudData);
         setSupabaseStatus("✅ Loaded from Supabase");
-      } catch (err: any) {
+      } catch (err) {
         console.error(err);
-        setSupabaseStatus("❌ Could not load from Supabase");
+        setSupabaseStatus("❌ Could not load from Supabase (showing local data)");
       }
     }
 
     loadData();
   }, []);
 
-  // Save to localStorage whenever birthdays change
+  // Save to localStorage whenever list changes
   useEffect(() => {
     saveBirthdays(birthdays);
   }, [birthdays]);
 
+  //
+  // --- ADD / EDIT ---
+  //
   const handleAdd = (e: React.FormEvent) => {
     e.preventDefault();
 
@@ -165,18 +169,6 @@ export default function HomePage() {
 
     if (!trimmedName || !day || !month) {
       setError("Please fill in name, day and month.");
-      setTimeout(() => setError(null), 3000);
-      return;
-    }
-
-    if (Number.isNaN(dayNum) || dayNum < 1 || dayNum > 31) {
-      setError("Day must be between 1 and 31.");
-      setTimeout(() => setError(null), 3000);
-      return;
-    }
-
-    if (Number.isNaN(monthNum) || monthNum < 1 || monthNum > 12) {
-      setError("Please select a valid month.");
       setTimeout(() => setError(null), 3000);
       return;
     }
@@ -193,31 +185,39 @@ export default function HomePage() {
     let updated: Birthday[];
 
     if (editingId) {
-      // update existing (local only for now)
+      //
+      // --- EDIT CASE ---
+      //
       updated = birthdays
-        .map((b) =>
-          b.id === editingId ? { ...b, ...baseBirthday } : b
-        )
+        .map((b) => (b.id === editingId ? { ...b, ...baseBirthday } : b))
         .sort((a, b) => daysUntil(a) - daysUntil(b));
+
+      const edited = updated.find((b) => b.id === editingId);
+      if (edited) {
+        updateInCloud(edited).catch((err) => {
+          console.error("Cloud update failed:", err);
+          setSupabaseStatus("❌ Cloud update failed");
+        });
+      }
     } else {
-      // create new
-      const newBirthday: Birthday = {
-        id: uuidv4(),
-        ...baseBirthday,
-      };
+      //
+      // --- ADD CASE ---
+      //
+      const newBirthday: Birthday = { id: uuidv4(), ...baseBirthday };
 
       updated = [...birthdays, newBirthday].sort(
         (a, b) => daysUntil(a) - daysUntil(b)
       );
 
-      // ☁️ Save to Supabase for new entries
       saveToCloud(newBirthday).catch((err) => {
         console.error("Cloud save failed:", err);
-        setSupabaseStatus("❌ Cloud save failed: " + (err?.message ?? "Unknown error"));
+        setSupabaseStatus("❌ Cloud save failed");
       });
     }
 
     setBirthdays(updated);
+
+    // Reset form
     setName("");
     setDay("");
     setMonth("");
@@ -227,12 +227,22 @@ export default function HomePage() {
     setError(null);
   };
 
+  //
+  // --- DELETE ---
+  //
   const handleDelete = (id: string) => {
     const updated = birthdays.filter((b) => b.id !== id);
     setBirthdays(updated);
-    // (later we can also delete from Supabase)
+
+    deleteFromCloud(id).catch((err) => {
+      console.error("Cloud delete failed:", err);
+      setSupabaseStatus("❌ Cloud delete failed");
+    });
   };
 
+  //
+  // --- EDIT BUTTON ---
+  //
   const handleEdit = (b: Birthday) => {
     setEditingId(b.id);
     setName(b.name);
@@ -241,23 +251,21 @@ export default function HomePage() {
     setYear(b.year ? String(b.year) : "");
     setTimezone(b.timezone);
     setPhotoUrl(b.photoUrl ?? "");
-    setError(null);
   };
 
   const today = new Date();
   const todayMonth = today.getMonth() + 1;
   const todayDay = today.getDate();
 
+  //
+  // --- UI ---
+  //
   return (
     <main className="min-h-screen bg-slate-900 text-slate-100 flex justify-center p-6">
       <div className="w-full max-w-md space-y-6">
-        <h1 className="text-2xl font-bold text-center">
-          Simple Birthday Reminder
-        </h1>
+        <h1 className="text-2xl font-bold text-center">Simple Birthday Reminder</h1>
 
-        <div className="text-xs text-center text-slate-400">
-          {supabaseStatus}
-        </div>
+        <div className="text-xs text-center text-slate-400">{supabaseStatus}</div>
 
         {error && (
           <div className="bg-red-900/40 border border-red-500/60 text-red-100 text-sm px-3 py-2 rounded-md">
@@ -265,18 +273,15 @@ export default function HomePage() {
           </div>
         )}
 
-        {/* Add birthday form */}
-        <form
-          onSubmit={handleAdd}
-          className="space-y-4 bg-slate-800 p-4 rounded-xl"
-        >
+        {/* FORM */}
+        <form onSubmit={handleAdd} className="space-y-4 bg-slate-800 p-4 rounded-xl">
           <div className="space-y-1">
             <label className="text-sm">Name</label>
             <input
               className="w-full rounded-md px-3 py-2 bg-white text-slate-900 border border-slate-300"
               value={name}
               onChange={(e) => setName(e.target.value)}
-              placeholder="Mum, John, Best mate..."
+              placeholder="Mum, John, Mate..."
             />
           </div>
 
@@ -293,6 +298,7 @@ export default function HomePage() {
                 placeholder="12"
               />
             </div>
+
             <div className="flex-1 space-y-1">
               <label className="text-sm">Month</label>
               <select
@@ -301,20 +307,14 @@ export default function HomePage() {
                 onChange={(e) => setMonth(e.target.value)}
               >
                 <option value="">--</option>
-                <option value="1">Jan</option>
-                <option value="2">Feb</option>
-                <option value="3">Mar</option>
-                <option value="4">Apr</option>
-                <option value="5">May</option>
-                <option value="6">Jun</option>
-                <option value="7">Jul</option>
-                <option value="8">Aug</option>
-                <option value="9">Sep</option>
-                <option value="10">Oct</option>
-                <option value="11">Nov</option>
-                <option value="12">Dec</option>
+                {MONTH_NAMES.map((m, i) => (
+                  <option key={i} value={i + 1}>
+                    {m.slice(0, 3)}
+                  </option>
+                ))}
               </select>
             </div>
+
             <div className="flex-1 space-y-1">
               <label className="text-sm">Year (optional)</label>
               <input
@@ -365,7 +365,6 @@ export default function HomePage() {
                 setMonth("");
                 setYear("");
                 setPhotoUrl("");
-                setError(null);
               }}
             >
               Cancel edit
@@ -373,24 +372,21 @@ export default function HomePage() {
           )}
         </form>
 
-        {/* List of birthdays */}
+        {/* LIST */}
         <section className="space-y-3">
           <h2 className="text-lg font-semibold">
             Upcoming birthdays ({birthdays.length})
           </h2>
 
           {birthdays.length === 0 && (
-            <p className="text-sm text-slate-400">
-              No birthdays yet. Add someone above 👆
-            </p>
+            <p className="text-sm text-slate-400">No birthdays yet. Add someone above 👆</p>
           )}
 
           <ul className="space-y-3">
             {birthdays.map((b) => {
               const days = daysUntil(b);
               const turning = ageTurning(b);
-              const isToday =
-                b.month === todayMonth && b.day === todayDay;
+              const isToday = b.month === todayMonth && b.day === todayDay;
 
               return (
                 <li
@@ -406,23 +402,25 @@ export default function HomePage() {
                       className="w-10 h-10 rounded-full object-cover"
                     />
                   )}
+
                   <div className="flex-1">
                     <div className="font-semibold">{b.name}</div>
                     <div className="text-xs text-slate-400">
                       {formatBirthdayDate(b)} • {b.timezone}
                     </div>
                   </div>
+
                   <div className="text-right text-sm">
                     {isToday ? (
-                      <div className="text-amber-300 font-bold">
-                        Today 🎉
-                      </div>
+                      <div className="text-amber-300 font-bold">Today 🎉</div>
                     ) : (
                       <div>{days} days</div>
                     )}
+
                     <div className="text-xs text-slate-400 mb-1">
                       {turning ? `Turning ${turning}` : "Year unknown"}
                     </div>
+
                     <div className="flex flex-col items-end gap-1">
                       <button
                         className="text-[11px] text-emerald-300 hover:text-emerald-200"
